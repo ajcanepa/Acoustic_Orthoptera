@@ -38,6 +38,7 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+Acoustic_Orthoptera.Rproj
 
 # pkgdown site
 docs/
@@ -47,3 +48,7 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+
+# Data can't be visualized
+TABLA RESUMEN DE ESPECIES.xlsx
