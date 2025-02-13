@@ -1,0 +1,99 @@
+---
+title: "Analysis of Xeno-Canto Records"
+author: "Antonio Canepa Oneto"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+Vamos a descargar datos de [Xeno-canto](https://xeno-canto.org/), usando el paquete [`warbleR`](https://marce10.github.io/warbleR/index.html) y específicamente la función [`query_xc()`](https://marce10.github.io/warbleR/reference/query_xc.html?q=xeno#null) 
+
+
+## Carga de paquetes
+
+```{r, message=FALSE, warning=FALSE}
+# Instalar paquetes si es necesario
+if (!require("warbleR")) install.packages("httr", dependencies = TRUE)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE)
+if (!require("DT")) install.packages("DT", dependencies = TRUE)
+
+# Cargar paquetes
+library(warbleR)
+library(tidyverse)
+library(DT)
+```
+
+## Definimos las spp a buscar
+
+```{r}
+especies <- data.frame(species = c("Gryllus bimaculatus", "Acheta hispanicus"))
+print(especies)
+
+```
+
+## Descargamos los datos desde XC
+
+### Sin delimitar por calidad
+```{r, message=FALSE, warning=FALSE}
+# Consultar los metadatos en Xeno-canto para cada especie
+metadatos_list <- lapply(especies$species, function(sp) {
+  query_xc(qword = sp, download = FALSE)  # Solo obtener metadatos)
+})
+
+# Unir resultados en un solo dataframe
+metadatos <- bind_rows(metadatos_list)
+datatable(metadatos)
+
+```
+
+
+## Descargar grabaciones
+
+Intentaremos filtrar las coincidencias para que las descargas cumplan solo algunos criterios de calidad/metadata.
+
+
+```{r, message=FALSE, warning=FALSE}
+grabaciones_descargar <- metadatos %>%
+  filter(Country %in% c("Spain", "Portugal")) %>%  # Restringir la extensión geográfica
+  mutate(Quality = fct_relevel(Quality, "A", "B", "C", "D", "E")) %>%  # Ordenar la calidad
+  group_by(Genus, Specific_epithet) %>%  # Agrupar por especie
+  arrange(Quality) %>%  # Ordenar por calidad dentro de cada grupo
+  summarise(
+    grabaciones = list(
+      bind_rows(
+        head(filter(pick(everything()), Quality == "A"), 5),  # Hasta 5 grabaciones de calidad "A"
+        head(filter(pick(everything()), Quality != "A"), pmax(0, 5 - sum(Quality == "A")))  # Completar con las mejores disponibles
+      )
+    )
+  ) %>%
+  unnest(grabaciones) %>%  # Desanidar la lista de grabaciones
+  slice(1:5) %>%  # Asegurarse de que solo se seleccionen 5 grabaciones por especie
+  ungroup()
+```
+
+Visualizamos las grabaciones a descargar
+
+```{r}
+datatable(grabaciones_descargar)
+```
+
+
+### Creación de directorios y descarga de grabaciones
+
+Sólo se realiza cuando el argumento `eval=TRUE`, o cuando se ejecuta cada chunk de manera independiente.
+```{r, eval=FALSE, echo = TRUE, warning=FALSE, message=FALSE}
+# Crear un directorio para almacenar los audios
+if (!dir.exists("xc_audio")) dir.create("xc_audio")
+
+# Descargar las grabaciones
+if (nrow(metadatos) > 0) {
+  query_xc(X = grabaciones_descargar, download = TRUE, path = "xc_audio")
+} else {
+  message("No hay grabaciones disponibles para descargar.")
+}
+```
+

@@ -1,0 +1,190 @@
+---
+title: "Analysis of Xeno-Canto Records"
+author: "Antonio Canepa Oneto"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Descarga de datos desde Xeno-Canto
+
+Para acceder a [Xeno-canto](https://xeno-canto.org/), descargar los audios de diferentes especies y calcular la entropía espectral con `seewave::sh()`, puedes seguir estos pasos:
+
+* Acceder a Xeno-canto usando la API para buscar archivos de audio de cada especie.
+* Descargar los audios (seleccionando los 10 mejores por especie).
+* Obtener la metadata asociada.
+* Calcular la entropía espectral para cada grabación.
+* Guardar los resultados en un DataFrame con especie, metadata y valores de entropía.
+
+### Cargar paquetes necesarios
+
+```{r}
+# Instalar paquetes si es necesario
+if (!require("httr")) install.packages("httr", dependencies = TRUE)
+if (!require("jsonlite")) install.packages("jsonlite", dependencies = TRUE)
+if (!require("tuneR")) install.packages("tuneR", dependencies = TRUE)
+if (!require("seewave")) install.packages("seewave", dependencies = TRUE)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE)
+
+# Cargar librerías
+library(httr)
+library(jsonlite)
+library(tuneR)
+library(seewave)
+library(tidyverse)
+```
+
+### Descargar datos de Xeno-Canto y calcular entropía
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tuneR)
+library(seewave)
+
+# Crear carpeta para guardar audios si no existe
+if (!dir.exists("audios")) dir.create("audios", showWarnings = FALSE)
+
+# Función para obtener audios de Xeno-canto, calcular entropía y guardar metadata
+obtener_entropia <- function(species_name, max_recordings = 10) {
+  
+  resultados <- list()  # Lista para almacenar resultados
+  
+  cat("\n🔹 Procesando:", species_name, "\n")
+  
+  # Formatear el nombre de la especie para la URL
+  species_query <- gsub(" ", "+", species_name)
+  
+  # Hacer la consulta a la API de Xeno-canto
+  url <- paste0("https://www.xeno-canto.org/api/2/recordings?query=", species_query)
+  response <- GET(url)
+  
+  if (http_type(response) != "application/json") {
+    cat("⚠ Error en la consulta a Xeno-canto para", species_name, "\n")
+    return(NULL)
+  }
+  
+  data <- content(response, as = "text", encoding = "UTF-8")
+  json_data <- fromJSON(data)
+  
+  # Extraer datos de grabaciones
+  recordings <- json_data$recordings
+  
+  if (length(recordings) == 0) {
+    cat("⚠ No se encontraron grabaciones para:", species_name, "\n")
+    return(NULL)  # Retornar NULL si no hay grabaciones
+  }
+  
+  # Convertir a data.frame y seleccionar las mejores grabaciones (según calidad)
+  recordings <- as.data.frame(recordings) %>% arrange(desc(q)) %>% head(max_recordings)
+  
+  # Descargar cada grabación, calcular la entropía y guardar metadata
+  for (i in 1:nrow(recordings)) {
+    
+    cat("\n📥 Descargando grabación", i, "de", species_name, "\n")
+    
+    # ✅ Asegurar que la URL está bien formada
+    audio_url <- ifelse(
+      grepl("^https://", recordings$file[i]),  
+      recordings$file[i],                    
+      paste0("https://www.xeno-canto.org", recordings$file[i])  
+    )
+    
+    file_name <- paste0("audios/", gsub(" ", "_", species_name), "_", i, ".mp3")
+    
+    # Descargar archivo con reintentos
+    intento <- 1
+    descargado <- FALSE
+    while (!descargado && intento <= 3) {
+      cat("➡ Intento", intento, "descargando", file_name, "\n")
+      tryCatch({
+        download.file(audio_url, file_name, mode = "wb", quiet = TRUE)
+        descargado <- TRUE
+      }, error = function(e) {
+        cat("❌ Error en la descarga, reintentando...\n")
+        intento <- intento + 1
+        Sys.sleep(2)  # Esperar 2 segundos antes de reintentar
+      })
+    }
+    
+    if (!descargado) {
+      cat("⚠ No se pudo descargar:", file_name, "\n")
+      next  # Pasar a la siguiente grabación
+    }
+    
+    # Leer el audio y verificar que se cargó correctamente
+    wave <- tryCatch({
+      readMP3(file_name)
+    }, error = function(e) {
+      cat("❌ Error leyendo el archivo de audio:", file_name, "\n")
+      unlink(file_name)  # Eliminar archivo corrupto
+      return(NULL)
+    })
+    
+    if (is.null(wave)) next  # Si hubo error, saltar esta grabación
+    
+    # Verificar que el objeto wave es válido
+    if (!inherits(wave, "Wave")) {
+      cat("⚠ Archivo no es un objeto de audio válido:", file_name, "\n")
+      unlink(file_name)
+      next
+    }
+    
+    # Calcular espectrograma y verificar si es válido
+    spec <- tryCatch({
+      spectro(wave, plot = FALSE)$amp
+    }, error = function(e) {
+      cat("❌ Error generando espectrograma para:", file_name, "\n")
+      unlink(file_name)
+      return(NULL)
+    })
+    
+    if (is.null(spec)) next  # Si hubo error, saltar esta grabación
+    
+    # Calcular entropía espectral
+    entropia <- sh(spec)
+    
+    cat("✅ Entropía calculada:", entropia, "\n")
+    
+    # Guardar en la lista de resultados
+    resultados <- append(resultados, list(
+      data.frame(
+        Especie = species_name,
+        Archivo = file_name,
+        Entropia = entropia
+      )
+    ))
+    
+    # Liberar memoria
+    rm(wave, spec)
+    gc()
+  }
+  
+  # Unir resultados en un solo dataframe
+  if (length(resultados) > 0) {
+    return(bind_rows(resultados))
+  } else {
+    return(NULL)
+  }
+}
+
+```
+
+Aplicar la función a un dataframe de especies
+
+```{r}
+# Suponiendo que tienes un dataframe con las especies en una columna llamada "species"
+df_species <- data.frame(species = c("Gryllus bimaculatus", "Cicada orni"))  # Ejemplo
+
+# Aplicar la función a cada especie y combinar resultados
+resultados <- do.call(rbind, lapply(df_species$species, obtener_entropia))
+
+# Ver los resultados
+print(resultados)
+
+```
+
